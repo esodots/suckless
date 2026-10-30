@@ -1,0 +1,108 @@
+#!/bin/sh
+# bar: the left part of the dwm status, called by slstatus every 5 s:
+#   weather │ vpn │ wifi on|off │ b NN% │ v NN%|mute|off │
+# One process per refresh for all four. Clicks are handled by barclick.
+run=${XDG_RUNTIME_DIR:-/tmp}
+
+# weather: NWS station observations, cached and refreshed every 15 min in the
+# background so a refresh never waits on the network. Stations (tried in order,
+# the next one when a station returns no observations) and the contact for the
+# User-Agent NWS asks for come from ~/.config/bar/weather, e.g.
+#   WEATHER_STATIONS="KXYZ KABC"
+#   WEATHER_CONTACT="you@example.com"
+# No stations set = no weather part at all.
+conf=${XDG_CONFIG_HOME:-$HOME/.config}/bar/weather
+[ -r "$conf" ] && . "$conf"
+weather() {
+    [ -n "$WEATHER_STATIONS" ] || return 0
+    c=$run/bar-weather
+    age=$(( $(date +%s) - $(stat -c %Y "$c" 2>/dev/null || echo 0) ))
+    if [ "$age" -ge 900 ] && mkdir "$run/bar-weather.lock" 2>/dev/null; then
+        (
+            for st in $WEATHER_STATIONS; do
+                t=$(curl -Ss --max-time 12 \
+                    -H "User-Agent: (dwm bar, ${WEATHER_CONTACT:-unknown})" \
+                    "https://api.weather.gov/stations/$st/observations?limit=6" 2>/dev/null |
+                    jq -r '[.features[].properties | select(.temperature.value != null)][0]
+                           // empty
+                           | ((.temperature.value*9/5+32) | round | tostring) + "°F"' 2>/dev/null)
+                case $t in ''|null) ;; *) break ;; esac
+            done
+            case $t in ''|null) t="n/a" ;; esac
+            # a failed fetch keeps the last good temperature instead of n/a
+            if [ "$t" != "n/a" ] || [ ! -s "$c" ]; then
+                printf '%s\n' "$t" > "$c.new" && mv "$c.new" "$c"
+            else
+                touch "$c"
+            fi
+            rmdir "$run/bar-weather.lock"
+            pkill -USR1 -x slstatus   # show it now, not at the next 5 s tick
+        ) >/dev/null 2>&1 &
+    fi
+    cat "$c" 2>/dev/null || echo "n/a"
+}
+
+wifi() {
+    for i in /sys/class/net/wl*; do
+        [ -e "$i" ] || { echo "wifi off"; return; }
+        if [ "$(cat "$i/operstate")" = up ]; then
+            # right-click shows the network name for 3 s (barclick sets the flag)
+            if [ -e "$run/bar-wifi-name" ]; then
+                n=$(iw dev "${i##*/}" link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p')
+                [ -n "$n" ] || n=$(iwctl station "${i##*/}" show 2>/dev/null |
+                    sed -n 's/^[[:space:]]*Connected network[[:space:]]*//p' | sed 's/[[:space:]]*$//')
+                echo "${n:-wifi on}"
+            else
+                echo "wifi on"
+            fi
+        else
+            echo "wifi off"
+        fi
+        return
+    done
+}
+
+# vpn: Mullvad toggle with kill switch (/usr/local/bin/vpn-toggle, run through
+# sudo by barclick). "VPN down" = on, but the tunnel is missing: everything
+# outside it is blocked until it comes back or the VPN is turned off.
+vpn() {
+    if [ "$(cat /var/lib/vpn-toggle/state 2>/dev/null)" = on ]; then
+        if [ -e /sys/class/net/vpn ]; then echo "VPN on"; else echo "VPN down"; fi
+    else
+        echo "vpn off"
+    fi
+}
+
+bright() {
+    d=$(ls -d /sys/class/backlight/* 2>/dev/null | head -n1)
+    [ -n "$d" ] || { echo "b  n/a"; return; }
+    # width fixed at 3 digits, like v: the status is right-aligned, so a number
+    # gaining or losing a digit would slide everything left of it under the
+    # pointer, and the next wheel step would land on the neighbouring part
+    printf 'b %3d%%\n' $(( $(cat "$d/brightness") * 100 / $(cat "$d/max_brightness") ))
+}
+
+vol() {
+    pgrep -x pipewire >/dev/null || { echo "v  off"; return; }
+    # wpctl (WirePlumber, native PipeWire) instead of pactl: one call gives
+    # volume and mute, and pactl run from slstatus printed its answer and then
+    # hung until killed (~1 s per call, 2 s per refresh; the blank bar after
+    # login). The timeout stays as a guard.
+    o=$(timeout 1 wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
+    case $o in *MUTED*) echo "v mute"; return ;; esac
+    v=$(printf '%s\n' "$o" | awk '/^Volume:/ { printf "%d", $2 * 100 + 0.5 }')
+    case $v in ''|*[!0-9]*) echo "v  n/a" ;; *) printf 'v %3d%%\n' "$v" ;; esac
+}
+
+# Each part is timed; a run over 1 s is logged to $run/bar-slow.log so a slow
+# start can be traced to the part that held it up.
+ms() { date +%s%3N; }
+t0=$(ms); a=$(weather); t1=$(ms); b=$(vpn); t2=$(ms); c=$(wifi); t3=$(ms)
+d=$(bright); t4=$(ms); e=$(vol); t5=$(ms)
+[ -n "$a" ] && a=" $a │"
+printf '%s %s │ %s │ %s │ %s │ \n' "$a" "$b" "$c" "$d" "$e"
+[ $(( t5 - t0 )) -gt 1000 ] &&
+    printf '%s weather=%s vpn=%s wifi=%s bright=%s vol=%s ms\n' "$(date +%T)" \
+        $(( t1 - t0 )) $(( t2 - t1 )) $(( t3 - t2 )) $(( t4 - t3 )) $(( t5 - t4 )) \
+        >> "$run/bar-slow.log"
+exit 0

@@ -1,0 +1,17 @@
+#!/bin/sh
+# bl +N | -N: change the backlight by N percent, never below 1 %.
+# Writes sysfs directly (made writable by /etc/udev/rules.d/90-backlight.rules).
+# Runs one at a time (flock): a fast wheel spawns several bl at once, and
+# each read-add-write would otherwise overwrite the others and drop steps.
+d=$(ls -d /sys/class/backlight/* 2>/dev/null | head -n1)
+[ -n "$d" ] || exit 1
+if command -v flock >/dev/null; then
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/bl.lock"
+    flock 9
+fi
+max=$(cat "$d/max_brightness"); cur=$(cat "$d/brightness")
+new=$(( cur + max * ${1:-0} / 100 ))
+floor=$(( max / 100 )); [ "$floor" -lt 1 ] && floor=1
+[ "$new" -lt "$floor" ] && new=$floor
+[ "$new" -gt "$max" ] && new=$max
+echo "$new" > "$d/brightness"

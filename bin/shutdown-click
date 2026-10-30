@@ -1,0 +1,19 @@
+#!/bin/sh
+# shutdown-click: the dwm bar's [shutdown]. The first click only arms it (nothing
+# is shown); a second click within 7 s powers off, like qtile's
+# SHUTDOWN_CONFIRM_SECONDS. Every click is logged to $log; a failed poweroff
+# also pops a dunst notification, since dwm discards the script's output.
+f="${XDG_RUNTIME_DIR:-/tmp}/shutdown-armed"
+log="${XDG_RUNTIME_DIR:-/tmp}/shutdown-click.log"
+now=$(date +%s)
+if [ -f "$f" ] && [ $(( now - $(cat "$f") )) -le 7 ]; then
+    rm -f "$f"
+    echo "$(date +%T) second click, powering off" >> "$log"
+    if ! err=$(systemctl poweroff 2>&1); then
+        echo "$(date +%T) poweroff failed: $err" >> "$log"
+        notify-send -u critical "shutdown failed" "$err"
+    fi
+    exit
+fi
+echo "$now" > "$f"
+echo "$(date +%T) armed" >> "$log"

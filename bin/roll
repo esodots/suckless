@@ -1,0 +1,27 @@
+#!/bin/sh
+# roll: dice for dwm (Super+D). Type NdS (1d20, 4d6, d6); the result opens in
+# dmenu, Escape or Return closes it. Random numbers from /dev/urandom.
+MAX_DICE=200   # same cap as the qtile dice box
+FONT="JetBrainsMono Nerd Font Mono:pixelsize=20"
+menu() { dmenu -b -fn "$FONT" -nb '#000000' -nf '#91959e' -sb '#555555' -sf '#ffffff' "$@"; }
+
+expr=$(menu -p "roll:" </dev/null) || exit 0
+expr=$(printf '%s' "$expr" | tr -d ' ' | tr 'D' 'd')
+case $expr in
+    *d*) n=${expr%%d*}; s=${expr#*d} ;;
+    *) printf 'not NdS\n' | menu -p "$expr ="; exit 0 ;;
+esac
+[ -z "$n" ] && n=1
+case $n$s in *[!0-9]*|'') printf 'not NdS\n' | menu -p "$expr ="; exit 0 ;; esac
+if [ "$n" -lt 1 ] || [ "$n" -gt "$MAX_DICE" ] || [ "$s" -lt 2 ]; then
+    printf '1-%s dice, 2+ sides\n' "$MAX_DICE" | menu -p "$expr ="; exit 0
+fi
+
+# unbiased: reject values above the largest multiple of s
+rolls=$(od -An -tu4 -N $((n * 4 * 4)) /dev/urandom | tr -s ' ' '\n' | grep . |
+    awk -v n="$n" -v s="$s" 'BEGIN { lim = 4294967296 - (4294967296 % s) }
+        $1 < lim { r = $1 % s + 1; out = out (c ? " + " : "") r; t += r; c++ }
+        c == n { exit }
+        END { if (c < n) exit 1; print (n > 1 ? out " = " t : t) }') ||
+    rolls="try again"
+printf '%s\n' "$rolls" | menu -p "$n""d$s ="

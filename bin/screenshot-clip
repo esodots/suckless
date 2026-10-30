@@ -1,0 +1,74 @@
+#!/bin/sh
+# Screenshot -> file (full quality) + clipboard (quantized).
+# `file`/`clip` select a region interactively; `full` grabs the whole screen.
+#
+# xclip 0.13's INCR transfer is broken above ~1 MB: measured 2026-08-31, a
+# 768 KB payload round-trips in 7 ms and a 1024 KB one never completes at all.
+# The reader then blocks until it times out and the xclip owner process is
+# left alive, so every failed paste stacks another one up. Full-panel PNGs run
+# ~2 MB, i.e. always on the dead side of that cliff.
+#
+# So: keep the untouched PNG on disk, and put a quantized copy on the
+# clipboard. -colors 256 takes a typical shot 1.96 MB -> 540 KB at identical
+# dimensions, which is lossless enough for UI/terminal content and lands well
+# under the cliff. Only if that is still too big do we start scaling.
+#
+# Do NOT "simplify" this back to `maim | xclip`: piping leaves a zero-byte file
+# behind whenever the selection is cancelled with Escape, because tee/redirect
+# creates the file before maim decides there is nothing to write.
+
+set -eu
+
+BUDGET=${SCREENSHOT_CLIP_BUDGET:-716800}   # 700 KB, safely under the ~1 MB cliff
+DIR="$HOME/screenshots"
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/screenshot-clip.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT
+
+# Reap stale image/png owners from previously wedged transfers. Matched by
+# reading each cmdline rather than `pkill -f`, which would also match this
+# script and any agent shell that has the pattern in its own command line.
+for p in $(pgrep -x xclip 2>/dev/null || true); do
+    if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'image/png'; then
+        kill "$p" 2>/dev/null || true
+    fi
+done
+
+# Shrink a copy under BUDGET, escalating only as far as needed.
+fit() {
+    src=$1 out=$2
+    [ "$(stat -c%s "$src")" -le "$BUDGET" ] && { cp "$src" "$out"; return; }
+    for opt in "-colors 256" "-colors 128" "-colors 128 -resize 80%" \
+               "-colors 64 -resize 65%" "-colors 64 -resize 50%"; do
+        # shellcheck disable=SC2086
+        magick "$src" -strip $opt -define png:compression-level=9 "$out" 2>/dev/null || continue
+        [ "$(stat -c%s "$out")" -le "$BUDGET" ] && return
+    done
+    # Nothing fit; the caller still gets a file, the clipboard just may hang.
+    :
+}
+
+case ${1:-file} in
+file)
+    mkdir -p "$DIR"
+    f="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+    maim -su "$f"                       # Escape / cancel exits nonzero -> set -e stops here
+    fit "$f" "$TMP/clip.png"
+    xclip -selection clipboard -t image/png -i "$TMP/clip.png"
+    ;;
+full)
+    mkdir -p "$DIR"
+    f="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+    maim -u "$f"                        # no -s: whole X screen, no selection
+    fit "$f" "$TMP/clip.png"
+    xclip -selection clipboard -t image/png -i "$TMP/clip.png"
+    ;;
+clip)
+    maim -su "$TMP/shot.png"
+    fit "$TMP/shot.png" "$TMP/clip.png"
+    xclip -selection clipboard -t image/png -i "$TMP/clip.png"
+    ;;
+*)
+    echo "usage: ${0##*/} [file|full|clip]" >&2
+    exit 2
+    ;;
+esac

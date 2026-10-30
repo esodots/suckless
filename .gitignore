@@ -1,0 +1,9 @@
+# build output
+*.o
+/dwm/dwm
+/slstatus/slstatus
+/st/st
+# local backup copies
+*.bak*
+.bak*
+dwm/keys.local.h

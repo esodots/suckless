@@ -1,0 +1,10 @@
+#!/bin/sh
+# barvol +N | -N | mute: change the volume (0-100 %, like the qtile bar) and
+# refresh the dwm status at once. wpctl applies each step on the server, so
+# the steps of a fast wheel are not lost, and -l 1.0 caps it at 100 %.
+case $1 in
+mute) wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle ;;
+-*) wpctl set-volume @DEFAULT_AUDIO_SINK@ "${1#-}%-" ;;
+*) wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ "${1#+}%+" ;;
+esac
+pkill -USR1 -x slstatus

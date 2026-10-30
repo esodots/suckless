@@ -1,0 +1,37 @@
+#!/bin/sh
+# barclick BUTTON PART: dwm runs this for clicks on the status text, with the
+# mouse button (1 left, 3 right, 4/5 wheel up/down) and the clicked │-part.
+b=$1 part=$2
+refresh() { pkill -USR1 -x slstatus; }
+case $part in
+"[shutdown]")
+    [ "$b" = 1 ] && exec shutdown-click ;;
+"vpn off"|"VPN on"|"VPN down")
+    # wg-quick takes a second or two; the bar shows the result afterwards
+    [ "$b" = 1 ] && { sudo -n /usr/local/bin/vpn-toggle toggle; refresh; } ;;
+"wifi on"|"wifi off")
+    case $b in
+    1) exec st -e iwctl ;;
+    3) f=${XDG_RUNTIME_DIR:-/tmp}/bar-wifi-name
+       touch "$f"; refresh; sleep 3; rm -f "$f"; refresh ;;
+    esac ;;
+"b "*)
+    case $b in
+    4) bl +5; refresh ;;
+    5) bl -5; refresh ;;
+    esac ;;
+"v "*)
+    case $b in
+    1) barvol mute ;;
+    4) barvol +1 ;;
+    5) barvol -1 ;;
+    esac ;;
+*°F|n/a)
+    # left-click fetches the weather now: mark the cache stale (the old value
+    # stays on screen); bar refreshes the status itself when the fetch is done
+    c=${XDG_RUNTIME_DIR:-/tmp}/bar-weather
+    [ "$b" = 1 ] && { [ -e "$c" ] && touch -d @0 "$c"; refresh; } ;;
+*)
+    # battery, date, time: refresh
+    refresh ;;
+esac
